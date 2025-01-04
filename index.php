@@ -15,17 +15,14 @@ if (isset($_GET['action'])) {
             // We'll store in the file as "QUIT|<timestamp>"
             $quitLine = "QUIT|" . $quitDateTime . "\n";
             
-            // Rewrite the file’s first line or just append
-            // For simplicity, we’ll remove any existing QUIT line and then append a new one.
+            // Remove any existing QUIT line and then append a new one at the top:
             $lines = file_exists($db_file) ? file($db_file) : [];
-            // Filter out lines that begin with "QUIT|"
             $filteredLines = [];
             foreach ($lines as $l) {
                 if (strpos($l, "QUIT|") !== 0) {
                     $filteredLines[] = $l;
                 }
             }
-            // Add the new QUIT line at top
             array_unshift($filteredLines, $quitLine);
             file_put_contents($db_file, implode("", $filteredLines));
         }
@@ -48,7 +45,6 @@ if (isset($_GET['action'])) {
             if (strpos($l, "DAILY|") === 0) {
                 $parts = explode("|", $l);
                 if (isset($parts[1]) && $parts[1] === $date) {
-                    // Overwrite
                     $lines[$idx] = $line;
                     $found = true;
                     break;
@@ -79,7 +75,7 @@ if (isset($_GET['action'])) {
         }
 
         // Identify the milestone info (we’ll track in minutes for better granularity)
-        $milestones = getMilestones(); // array of [minutes => label, 'desc' => ...]
+        $milestones = getMilestones(); 
         $progressData = computeProgress($hoursSinceQuit, $milestones);
 
         echo json_encode([
@@ -95,13 +91,6 @@ if (isset($_GET['action'])) {
 
 // -- Helper Functions --------------------------------------------------------
 
-/**
- * parseQuitAndDaily($filename) 
- *   -> returns [
- *        'quitTime'   => (string|null),
- *        'dailyCount' => (int), // for today's date
- *      ]
- */
 function parseQuitAndDaily($filename) {
     if (!file_exists($filename)) {
         return ['quitTime' => null, 'dailyCount' => 0];
@@ -135,13 +124,8 @@ function parseQuitAndDaily($filename) {
     ];
 }
 
-/**
- * We define our milestone data in minutes:
- *  - 20 min, 8 hr, 12 hr, 24 hr, 48 hr, 72 hr, 1 week, 2 weeks, etc.
- */
 function getMilestones() {
     return [
-        // minutes => [ 'label' => '', 'desc' => '' ]
         20 => [
             'label' => '20 Minutes',
             'desc'  => 'Your heart rate and blood pressure are dropping back to normal levels.',
@@ -205,13 +189,8 @@ function getMilestones() {
     ];
 }
 
-/**
- * computeProgress($hoursSinceQuit, $milestones)
- *   -> Returns the current milestone, next milestone, plus a progress fraction for the progress bar.
- */
 function computeProgress($hoursSinceQuit, $milestones) {
     if ($hoursSinceQuit === null) {
-        // Means user hasn’t set a quit time yet
         return [
             'currentLabel'   => null,
             'currentDesc'    => null,
@@ -224,12 +203,9 @@ function computeProgress($hoursSinceQuit, $milestones) {
     }
 
     $minutesElapsed = (int)round($hoursSinceQuit * 60);
-
-    // Sort milestone keys in ascending order
     $sortedMilestones = $milestones;
     ksort($sortedMilestones);
 
-    // We’ll step through to find which milestone we’ve reached and which is next.
     $previousKey = 0;
     $previous = ['label' => 'Just Quit', 'desc' => 'Congratulations on taking this step!'];
     $next = null;
@@ -248,8 +224,8 @@ function computeProgress($hoursSinceQuit, $milestones) {
         }
     }
 
-    // If we’ve surpassed the last milestone, there is no next milestone in our list
     if (!$next) {
+        // Past the last milestone
         end($sortedMilestones);
         $lastKey = key($sortedMilestones);
         if ($minutesElapsed >= $lastKey) {
@@ -259,8 +235,6 @@ function computeProgress($hoursSinceQuit, $milestones) {
         }
     }
 
-    // Calculate progress ratio:
-    // If we have a next milestone, ratio = (minutesElapsed - previousKey) / (nextKey - previousKey)
     $progressRatio = 1.0;
     $nextMinutes   = 0;
 
@@ -364,6 +338,12 @@ function computeProgress($hoursSinceQuit, $milestones) {
             display: inline-block;
             max-width: 100%;
         }
+        /* The Live Timer Display */
+        #timeSinceQuitDisplay {
+            font-size: 1.25em;
+            margin: 10px 0;
+            font-weight: bold;
+        }
     </style>
 </head>
 <body>
@@ -391,7 +371,13 @@ function computeProgress($hoursSinceQuit, $milestones) {
         <p>If this stays at 0 all day, that’s fantastic progress!</p>
     </section>
 
-    <!-- 3) Progress & Milestones -->
+    <!-- 3) Live Timer since Quit -->
+    <section>
+        <h2>Time Since You Quit</h2>
+        <div id="timeSinceQuitDisplay">--:--:--</div>
+    </section>
+
+    <!-- 4) Progress & Milestones -->
     <section class="progress-container">
         <h2>Health Milestones</h2>
         <p id="currentMilestone" style="font-weight: bold;"></p>
@@ -407,6 +393,7 @@ function computeProgress($hoursSinceQuit, $milestones) {
 
 <script>
 let currentCount = 0;
+let quitTimerInterval = null; // We'll store our timer interval ID here
 
 // -------------- QUIT FORM HANDLER --------------
 document.getElementById('quitForm').addEventListener('submit', function(e) {
@@ -423,6 +410,11 @@ document.getElementById('quitForm').addEventListener('submit', function(e) {
     })
     .then(r => r.json())
     .then(d => {
+        // If user sets a new quit time, clear any existing timer:
+        if (quitTimerInterval) {
+            clearInterval(quitTimerInterval);
+            quitTimerInterval = null;
+        }
         updateStats();
     });
 });
@@ -468,24 +460,66 @@ function updateStats() {
             document.getElementById('progressBarFill').style.width = "0%";
             document.getElementById('nextMilestoneLabel').textContent = "--";
             document.getElementById('milestoneMessage').textContent = "Please set your quit date/time above.";
+            document.getElementById('timeSinceQuitDisplay').textContent = "--:--:--";
             return;
         }
 
-        // We have a quit time, so let's show milestone info
+        // We have a quit time, start (or restart) the live timer
+        startQuitTimer(d.quitDateTime);
+
+        // Show milestone info
         let p = d.progress;
-        document.getElementById('currentMilestone').textContent = p.currentLabel;
+        document.getElementById('currentMilestone').textContent = p.currentLabel || "Just Quit";
+        
         if (!p.nextLabel) {
-            // Surpassed the last milestone in our list
             document.getElementById('nextMilestoneLabel').textContent = "You’ve reached the final milestone in our tracker!";
         } else {
             document.getElementById('nextMilestoneLabel').textContent = p.nextLabel;
         }
-        document.getElementById('milestoneMessage').textContent = p.currentDesc;
+        document.getElementById('milestoneMessage').textContent = p.currentDesc || "";
 
         // Progress bar
         let percent = p.progressRatio * 100;
         document.getElementById('progressBarFill').style.width = percent + "%";
     });
+}
+
+// -------------- LIVE TIMER --------------
+function startQuitTimer(quitDateTimeStr) {
+    // If there's already a timer, clear it
+    if (quitTimerInterval) {
+        clearInterval(quitTimerInterval);
+    }
+
+    const quitDate = new Date(quitDateTimeStr);
+
+    function updateTimer() {
+        const now = new Date();
+        let diffMs = now - quitDate;
+        if (diffMs < 0) {
+            // Quit time is in the future, weird scenario but let's handle it:
+            document.getElementById('timeSinceQuitDisplay').textContent = "Starts in future!";
+            return;
+        }
+
+        // Calculate total seconds difference
+        let totalSeconds = Math.floor(diffMs / 1000);
+        let seconds = totalSeconds % 60;
+        let totalMinutes = Math.floor(totalSeconds / 60);
+        let minutes = totalMinutes % 60;
+        let totalHours = Math.floor(totalMinutes / 60);
+        let hours = totalHours % 24;
+        let days = Math.floor(totalHours / 24);
+
+        // Format: d days, HH:MM:SS
+        // Or just d days/hours/min/sec inline
+        let displayStr = `${days}d ${hours}h ${minutes}m ${seconds}s`;
+        document.getElementById('timeSinceQuitDisplay').textContent = displayStr;
+    }
+
+    // Update right away, then every second
+    updateTimer();
+    quitTimerInterval = setInterval(updateTimer, 1000);
 }
 
 // On page load:
